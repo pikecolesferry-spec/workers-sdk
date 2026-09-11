@@ -1,14 +1,15 @@
 import path from "node:path";
 import {
 	buildContainerImages,
-	buildAndMaybePush,
 	cleanupBuiltImages,
 	isDockerfileContainerConfig,
+	startContainerBuild,
 	verifyDockerInstalled,
 } from "@cloudflare/containers-shared";
 import {
 	getDockerPath,
 	getDurableObjectContainerApps,
+	UserError,
 } from "@cloudflare/workers-utils";
 import type { BuiltContainerImage } from "@cloudflare/containers-shared";
 import type {
@@ -128,18 +129,17 @@ export async function buildDurableObjectContainerImages(
 				container.class_name,
 				imageName
 			);
-			await buildAndMaybePush(
-				{
+			const build = await startContainerBuild({
+				build: {
 					tag: localTag,
 					pathToDockerfile: dockerfile,
 					buildContext: path.dirname(dockerfile),
 					platform: "linux/amd64",
 				},
-				dockerPath,
-				false,
-				undefined,
-				false
-			);
+				pathToDocker: dockerPath,
+				verifyDockerIsRunning: false,
+			});
+			await build.ready;
 			builtImages.push({
 				className: container.class_name,
 				imageName,
@@ -148,7 +148,15 @@ export async function buildDurableObjectContainerImages(
 		}
 	} catch (error) {
 		await cleanupBuiltImages(builtImages, dockerPath);
-		throw error;
+		if (error instanceof Error) {
+			throw new UserError(error.message, {
+				cause: error,
+				telemetryMessage: "container build image operation failed",
+			});
+		}
+		throw new UserError("An unknown error occurred", {
+			telemetryMessage: "container build unknown error",
+		});
 	}
 	return builtImages;
 }

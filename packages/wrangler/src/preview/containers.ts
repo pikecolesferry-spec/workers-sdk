@@ -1,9 +1,10 @@
 import { getLogLevel, setLogLevel } from "@cloudflare/cli-shared-helpers";
 import {
 	apply,
-	buildAndMaybePush,
 	initContainersSharedContext,
 	listDurableObjects,
+	pushImageIfChanged,
+	startContainerBuild,
 } from "@cloudflare/containers-shared";
 import { getDockerPath, UserError } from "@cloudflare/workers-utils";
 import { fetchPagedListResult, fetchResult } from "../cfetch";
@@ -191,17 +192,40 @@ async function buildContainer(
 	const imageFullName = `${containerConfig.name}:${imageTag.split("-")[0]}`;
 	logger.log("Building image", imageFullName);
 
-	return await buildAndMaybePush(
-		{
-			tag: imageFullName,
-			pathToDockerfile: containerConfig.dockerfile,
-			buildContext: containerConfig.image_build_context,
-			args: containerConfig.image_vars,
-		},
-		pathToDocker,
-		!dryRun,
-		containerConfig,
-		verifyDockerIsRunning,
-		complianceConfig
-	);
+	try {
+		const build = await startContainerBuild({
+			build: {
+				tag: imageFullName,
+				pathToDockerfile: containerConfig.dockerfile,
+				buildContext: containerConfig.image_build_context,
+				args: containerConfig.image_vars,
+			},
+			pathToDocker,
+			verifyDockerIsRunning,
+		});
+		await build.ready;
+
+		if (dryRun) {
+			return { newTag: imageFullName };
+		}
+
+		return await pushImageIfChanged({
+			pathToDocker,
+			sourceTag: imageFullName,
+			targetTag: imageFullName,
+			containerConfig,
+			complianceConfig,
+			cleanupSourceTag: true,
+		});
+	} catch (error) {
+		if (error instanceof Error) {
+			throw new UserError(error.message, {
+				cause: error,
+				telemetryMessage: "container build image operation failed",
+			});
+		}
+		throw new UserError("An unknown error occurred", {
+			telemetryMessage: "container build unknown error",
+		});
+	}
 }

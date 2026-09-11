@@ -513,59 +513,6 @@ async function checkImagePlatform(
 	}
 }
 
-/**
- * Builds a Docker image and optionally pushes it to the Cloudflare managed
- * registry.
- *
- * @param args - Build arguments including tag, Dockerfile path, build context, and platform.
- * @param pathToDocker - Path to the Docker CLI executable.
- * @param push - Whether to push the built image to the remote registry.
- * @param containerConfig - Optional container configuration for limit validation.
- * @param verifyDockerIsRunning - Whether to verify Docker before building.
- * @param complianceConfig - Compliance configuration used to select the managed registry.
- * @returns An {@link ImageRef} describing the built or pushed image.
- */
-export async function buildAndMaybePush(
-	args: BuildArgs,
-	pathToDocker: string,
-	push: boolean,
-	containerConfig?: DockerfileContainerConfig,
-	verifyDockerIsRunning?: boolean,
-	complianceConfig?: ComplianceConfig
-): Promise<ImageRef> {
-	try {
-		const build = await startContainerBuild({
-			pathToDocker,
-			verifyDockerIsRunning,
-			build: args,
-		});
-		await build.ready;
-
-		if (!push) {
-			return { newTag: args.tag };
-		}
-
-		return await pushImageIfChanged({
-			pathToDocker,
-			sourceTag: args.tag,
-			targetTag: args.tag,
-			containerConfig,
-			complianceConfig,
-			cleanupSourceTag: true,
-		});
-	} catch (error) {
-		if (error instanceof Error) {
-			throw new UserError(error.message, {
-				cause: error,
-				telemetryMessage: "container build image operation failed",
-			});
-		}
-		throw new UserError("An unknown error occurred", {
-			telemetryMessage: "container build unknown error",
-		});
-	}
-}
-
 async function buildContainerImage(
 	containerConfig: DockerfileContainerConfig,
 	pathToDocker: string,

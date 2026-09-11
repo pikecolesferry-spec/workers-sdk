@@ -17,6 +17,7 @@ import { EXIT_CODE_INVALID_PAGES_CONFIG } from "../pages/errors";
 import { updateCheck } from "../update-check";
 import type { NormalizedTypes } from "../experimental-config/load";
 import type {
+	ParsedConfigExports,
 	ParsedInputSettingsConfig,
 	ParsedInputWorkerConfig,
 } from "@cloudflare/config";
@@ -76,6 +77,8 @@ export interface NewConfig {
 	config: Config;
 	parsedWorkerConfig: ParsedInputWorkerConfig;
 	parsedSettingsConfig: ParsedInputSettingsConfig | undefined;
+	/** All validated exports from `cloudflare.config.ts`. */
+	parsedConfig: ParsedConfigExports;
 	/**
 	 * The mode the config was resolved in, from `--mode`/`--env` or
 	 * `CLOUDFLARE_ENV`. `undefined` when no mode was selected.
@@ -138,6 +141,7 @@ export async function readNewConfig(
 		config,
 		parsedWorkerConfig: loaded.parsedWorkerConfig,
 		parsedSettingsConfig: loaded.parsedSettingsConfig,
+		parsedConfig: loaded.parsedConfig,
 		mode: loaded.mode,
 		dependencies: loaded.dependencies,
 		types: loaded.types,

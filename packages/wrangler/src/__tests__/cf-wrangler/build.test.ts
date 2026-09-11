@@ -1,5 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { writeContainerConfig } from "@cloudflare/build-output-utils";
+import { buildAndWriteContainerOutput } from "@cloudflare/containers-shared";
 import { runInTempDir, seed } from "@cloudflare/workers-utils/test-helpers";
 import { describe, it, vi } from "vitest";
 import { runCfWranglerBuild } from "../../cf-wrangler/build";
@@ -8,6 +10,14 @@ import { mockConsoleMethods } from "../helpers/mock-console";
 vi.mock("@cloudflare/config", async (importOriginal) => {
 	const { createConfigMock } = await import("../helpers/mock-new-config");
 	return createConfigMock(importOriginal);
+});
+vi.mock("@cloudflare/containers-shared", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("@cloudflare/containers-shared")>();
+	return {
+		...actual,
+		buildAndWriteContainerOutput: vi.fn(),
+	};
 });
 
 describe("cf-wrangler build", () => {
@@ -40,5 +50,59 @@ describe("cf-wrangler build", () => {
 				path.resolve(".cloudflare/output/v0/workers/default/bundle/index.js")
 			)
 		).toBe(true);
+	});
+
+	it("emits Container build output", async ({ expect }) => {
+		await seed({
+			"cloudflare.config.ts": `export default {
+				type: "worker",
+				name: "cf-wrangler-build-worker",
+				compatibilityDate: "2026-05-18",
+				entrypoint: "./src/index.js",
+			};
+			export const api = {
+				type: "container",
+				name: "api-container",
+				image: { dockerfile: "./container/Dockerfile" },
+			};`,
+			"src/index.js": `export default {
+				async fetch() { return new Response("hello"); }
+			};`,
+			"container/Dockerfile": "FROM node:22",
+		});
+		vi.mocked(buildAndWriteContainerOutput).mockImplementationOnce(
+			async ({ config, root }) => {
+				const container = config.api;
+				if (
+					container?.type !== "container" ||
+					container.schedulingPolicy === "durable-object"
+				) {
+					throw new Error("Expected a standard Container config");
+				}
+				await writeContainerConfig({
+					root,
+					directoryName: "api",
+					config: {
+						...container,
+						image: { localReference: "api-container:wrangler-test" },
+					},
+				});
+			}
+		);
+
+		const exitCode = await runCfWranglerBuild({});
+
+		expect(exitCode).toBe(0);
+		expect(
+			JSON.parse(
+				fs.readFileSync(
+					path.resolve(".cloudflare/output/v0/containers/api/config.json"),
+					"utf-8"
+				)
+			)
+		).toMatchObject({
+			name: "api-container",
+			image: { localReference: "api-container:wrangler-test" },
+		});
 	});
 });

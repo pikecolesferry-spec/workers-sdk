@@ -1,7 +1,7 @@
 import path from "node:path";
 import {
-	buildAndMaybePush,
 	cleanupBuiltImages,
+	startContainerBuild,
 	verifyDockerInstalled,
 } from "@cloudflare/containers-shared";
 import { beforeEach, describe, it, vi } from "vitest";
@@ -10,8 +10,11 @@ import type { Config } from "@cloudflare/workers-utils";
 
 vi.mock("@cloudflare/containers-shared", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@cloudflare/containers-shared")>()),
-	buildAndMaybePush: vi.fn().mockResolvedValue({ newTag: "local" }),
 	cleanupBuiltImages: vi.fn(),
+	startContainerBuild: vi.fn().mockResolvedValue({
+		abort: vi.fn(),
+		ready: Promise.resolve(),
+	}),
 	verifyDockerInstalled: vi.fn(),
 }));
 
@@ -61,19 +64,17 @@ describe("buildDurableObjectContainerImages", () => {
 		);
 
 		expect(verifyDockerInstalled).toHaveBeenCalledOnce();
-		expect(buildAndMaybePush).toHaveBeenCalledOnce();
-		expect(buildAndMaybePush).toHaveBeenCalledWith(
-			{
+		expect(startContainerBuild).toHaveBeenCalledOnce();
+		expect(startContainerBuild).toHaveBeenCalledWith({
+			build: {
 				tag: expect.stringMatching(/^worker-sandbox-tools:wrangler-/),
 				pathToDockerfile: expectedDockerfile,
 				buildContext: path.dirname(expectedDockerfile),
 				platform: "linux/amd64",
 			},
-			expect.any(String),
-			false,
-			undefined,
-			false
-		);
+			pathToDocker: expect.any(String),
+			verifyDockerIsRunning: false,
+		});
 		expect(result).toEqual([
 			{
 				className: "Sandbox",
@@ -104,7 +105,7 @@ describe("buildDurableObjectContainerImages", () => {
 		await expect(
 			buildDurableObjectContainerImages(props, config)
 		).resolves.toEqual([]);
-		expect(buildAndMaybePush).not.toHaveBeenCalled();
+		expect(startContainerBuild).not.toHaveBeenCalled();
 	});
 
 	it("builds Durable Object-managed images before versions upload", async ({
@@ -127,15 +128,18 @@ describe("buildDurableObjectContainerImages", () => {
 		const result = await buildDurableObjectContainerImages(props, config);
 
 		expect(result).toHaveLength(1);
-		expect(buildAndMaybePush).toHaveBeenCalledOnce();
+		expect(startContainerBuild).toHaveBeenCalledOnce();
 	});
 
 	it("cleans up earlier images when a later build fails", async ({
 		expect,
 	}) => {
-		vi.mocked(buildAndMaybePush)
-			.mockResolvedValueOnce({ newTag: "first" })
-			.mockRejectedValueOnce(new Error("build failed"));
+		vi.mocked(startContainerBuild)
+			.mockResolvedValueOnce({ abort: vi.fn(), ready: Promise.resolve() })
+			.mockResolvedValueOnce({
+				abort: vi.fn(),
+				ready: Promise.reject(new Error("build failed")),
+			});
 		const props = {
 			command: "versions upload" as const,
 			dryRun: false,

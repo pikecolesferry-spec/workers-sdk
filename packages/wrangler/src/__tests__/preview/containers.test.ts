@@ -1,8 +1,9 @@
 import {
 	apply,
-	buildAndMaybePush,
 	listDurableObjects,
+	pushImageIfChanged,
 	SchedulingPolicy,
+	startContainerBuild,
 } from "@cloudflare/containers-shared";
 import { defaultWranglerConfig } from "@cloudflare/workers-utils";
 import { beforeEach, describe, test, vi } from "vitest";
@@ -23,8 +24,9 @@ vi.mock("../../cloudchamber/common", async (importOriginal) => ({
 vi.mock("@cloudflare/containers-shared", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@cloudflare/containers-shared")>()),
 	apply: vi.fn(),
-	buildAndMaybePush: vi.fn(),
 	listDurableObjects: vi.fn(),
+	pushImageIfChanged: vi.fn(),
+	startContainerBuild: vi.fn(),
 }));
 
 const PREVIEW_APP_NAME = "test-worker_my-feature_MyContainer";
@@ -65,10 +67,15 @@ describe("deployPreviewContainers", () => {
 
 	beforeEach(() => {
 		vi.mocked(apply).mockReset();
-		vi.mocked(buildAndMaybePush).mockReset();
 		vi.mocked(listDurableObjects).mockReset();
+		vi.mocked(pushImageIfChanged).mockReset();
+		vi.mocked(startContainerBuild).mockReset();
 		vi.mocked(listDurableObjects).mockResolvedValue([]);
-		vi.mocked(buildAndMaybePush).mockResolvedValue({ newTag: "built:tag" });
+		vi.mocked(pushImageIfChanged).mockResolvedValue({ newTag: "built:tag" });
+		vi.mocked(startContainerBuild).mockResolvedValue({
+			abort: vi.fn(),
+			ready: Promise.resolve(),
+		});
 	});
 
 	// Docker rejects uppercase characters in an image repository name, but the
@@ -87,15 +94,27 @@ describe("deployPreviewContainers", () => {
 			quiet: false,
 		});
 
-		expect(buildAndMaybePush).toHaveBeenCalledWith(
-			expect.objectContaining({
+		expect(startContainerBuild).toHaveBeenCalledWith({
+			build: expect.objectContaining({
 				tag: "test-worker_my-feature_mycontainer:deployment",
 			}),
-			expect.any(String),
-			true,
-			expect.objectContaining({ name: "test-worker_my-feature_mycontainer" }),
-			false,
-			config
+			pathToDocker: expect.any(String),
+			verifyDockerIsRunning: false,
+		});
+		expect(pushImageIfChanged).toHaveBeenCalledWith({
+			pathToDocker: expect.any(String),
+			sourceTag: "test-worker_my-feature_mycontainer:deployment",
+			targetTag: "test-worker_my-feature_mycontainer:deployment",
+			containerConfig: expect.objectContaining({
+				name: "test-worker_my-feature_mycontainer",
+			}),
+			complianceConfig: config,
+			cleanupSourceTag: true,
+		});
+		expect(
+			vi.mocked(startContainerBuild).mock.invocationCallOrder[0]
+		).toBeLessThan(
+			vi.mocked(pushImageIfChanged).mock.invocationCallOrder[0] ?? 0
 		);
 		expect(vi.mocked(apply).mock.calls[0]?.[1]).toMatchObject({
 			name: PREVIEW_APP_NAME,
@@ -117,9 +136,31 @@ describe("deployPreviewContainers", () => {
 			quiet: false,
 		});
 
-		expect(vi.mocked(buildAndMaybePush).mock.calls[0]?.[0]).toMatchObject({
+		expect(
+			vi.mocked(startContainerBuild).mock.calls[0]?.[0].build
+		).toMatchObject({
 			tag: "test-worker_feature-mybranch_mycontainer:deployment",
 		});
+	});
+
+	test("should wait for the image build before pushing", async ({ expect }) => {
+		const container = containerConfig();
+		const config = {
+			...defaultWranglerConfig,
+			containers: [container],
+		} as unknown as Config;
+		vi.mocked(startContainerBuild).mockResolvedValueOnce({
+			abort: vi.fn(),
+			ready: Promise.reject(new Error("build failed")),
+		});
+
+		await expect(
+			deployPreviewContainers(config, [container], deployment, ACCOUNT_ID, {
+				quiet: false,
+			})
+		).rejects.toThrow("build failed");
+
+		expect(pushImageIfChanged).not.toHaveBeenCalled();
 	});
 
 	// The image push target is derived from the compliance region, so an account
@@ -138,7 +179,9 @@ describe("deployPreviewContainers", () => {
 			quiet: false,
 		});
 
-		expect(vi.mocked(buildAndMaybePush).mock.calls[0]?.[5]).toMatchObject({
+		expect(
+			vi.mocked(pushImageIfChanged).mock.calls[0]?.[0].complianceConfig
+		).toMatchObject({
 			compliance_region: "fedramp_high",
 		});
 	});
@@ -205,7 +248,8 @@ describe("deployPreviewContainers", () => {
 			quiet: false,
 		});
 
-		expect(buildAndMaybePush).not.toHaveBeenCalled();
+		expect(startContainerBuild).not.toHaveBeenCalled();
+		expect(pushImageIfChanged).not.toHaveBeenCalled();
 		expect(vi.mocked(apply).mock.calls[0]?.[0]).toMatchObject({
 			imageRef: {
 				newTag: "registry.cloudflare.com/some-account-id/test:latest",
